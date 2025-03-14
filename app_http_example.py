@@ -48,10 +48,6 @@ with tab_listar:
     if agentes:
         df = pd.DataFrame(agentes)
         
-        # Convertir valores booleanos a texto para mejor visualización
-        df["activo"] = df["activo"].map({1: "Sí", 0: "No"})
-        df["monitor"] = df["monitor"].map({1: "Sí", 0: "No"})
-        
         # Mostrar tabla
         st.dataframe(df, use_container_width=True)
     else:
@@ -94,7 +90,6 @@ with tab_editar:
                             index=0 if not agente_data["seccion"] else 
                                   (1 if agente_data["seccion"] == "Seguridad" else 2)
                         )
-                        activo = st.checkbox("Activo", bool(agente_data["activo"]))
                     
                     with col2:
                         grupo = st.selectbox(
@@ -103,7 +98,6 @@ with tab_editar:
                             index=0 if not agente_data["grupo"] else 
                                   (1 if agente_data["grupo"] == "G-1" else 2)
                         )
-                        monitor = st.checkbox("Monitor", bool(agente_data["monitor"]))
                     
                     # Botones de acción
                     col_guardar, col_eliminar = st.columns(2)
@@ -119,7 +113,7 @@ with tab_editar:
                         # Actualizar agente mediante la API
                         success, result = update_agente_http(
                             nip, nombre, apellido1, apellido2, 
-                            seccion, grupo, activo, monitor
+                            seccion, grupo
                         )
                         
                         if success:
@@ -157,11 +151,9 @@ with tab_agregar:
         
         with col1:
             seccion = st.selectbox("Sección", ["", "Seguridad", "Atestados"], key="nuevo_seccion_http")
-            activo = st.checkbox("Activo", True, key="nuevo_activo_http")
         
         with col2:
             grupo = st.selectbox("Grupo", ["", "G-1", "G-2"], key="nuevo_grupo_http")
-            monitor = st.checkbox("Monitor", False, key="nuevo_monitor_http")
         
         # Botón de guardar
         guardar = st.form_submit_button("Guardar Nuevo Agente")
@@ -175,7 +167,7 @@ with tab_agregar:
                 # Añadir nuevo agente mediante la API
                 success, result = add_agente_http(
                     nip, nombre, apellido1, apellido2, 
-                    seccion, grupo, activo, monitor
+                    seccion, grupo
                 )
                 
                 if success:
