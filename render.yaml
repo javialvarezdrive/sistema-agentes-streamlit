@@ -1,0 +1,25 @@
+services:
+  # Servicio para la API
+  - type: web
+    name: sistema-agentes-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.0
+    
+  # Servicio para la aplicación Streamlit
+  - type: web
+    name: sistema-agentes-streamlit
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.enableCORS false --server.enableXsrfProtection false
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.0
+      - key: API_URL
+        fromService:
+          type: web
+          name: sistema-agentes-api
+          envVarKey: RENDER_EXTERNAL_URL
