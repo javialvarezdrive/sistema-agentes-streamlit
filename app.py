@@ -39,6 +39,43 @@ def filtrar_agentes_por_busqueda(df, busqueda):
         return df
     
     busqueda_lower = busqueda.lower()
+    return df[
+        df['nip'].astype(str).str.contains(busqueda_lower) | 
+        df['nombre_completo'].str.lower().str.contains(busqueda_lower)
+    ]
+
+# Función para estandarizar el formato de fechas a DD/MM/YYYY
+def date_input_es(label, value=None, min_value=None, max_value=None, key=None):
+    """
+    Crea un componente date_input con formato español (DD/MM/YYYY)
+    """
+    return st.date_input(
+        label=label,
+        value=value,
+        min_value=min_value,
+        max_value=max_value,
+        key=key,
+        format="DD/MM/YYYY"
+    )
+
+# Función para formatear fechas en formato español
+def format_date_es(date):
+    """
+    Formatea una fecha en formato español (DD/MM/YYYY)
+    """
+    if isinstance(date, pd.Timestamp):
+        return date.strftime('%d/%m/%Y')
+    elif isinstance(date, datetime):
+        return date.strftime('%d/%m/%Y')
+    else:
+        return date
+
+# Función auxiliar para filtrar agentes por búsqueda
+def filtrar_agentes_por_busqueda(df, busqueda):
+    if not busqueda:
+        return df
+    
+    busqueda_lower = busqueda.lower()
     mask = (
         df["nip"].str.lower().str.contains(busqueda_lower) | 
         df["nombre_completo"].str.lower().str.contains(busqueda_lower)
@@ -81,15 +118,60 @@ def get_agentes_actividades():
     return pd.read_sql_query("SELECT * FROM agentes_actividades", conn)
 
 @st.cache_data(ttl=300)
-def get_cursos():
+def get_cursos(incluir_ocultos=False):
     conn = get_db_connection()
-    query = "SELECT * FROM cursos ORDER BY nombre"
     try:
+        query = "SELECT * FROM cursos"
+        if not incluir_ocultos:
+            query += " WHERE oculto = 0 OR oculto IS NULL"
+        query += " ORDER BY nombre"
+        
         df = pd.read_sql_query(query, conn)
         return df
     except Exception as e:
         st.error(f"Error al obtener cursos: {e}")
         return pd.DataFrame()
+    finally:
+        conn.close()
+
+# Función para ocultar/mostrar un curso
+def toggle_ocultar_curso(curso_id, ocultar=True):
+    """Oculta o muestra un curso"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "UPDATE cursos SET oculto = ? WHERE id = ?",
+            (1 if ocultar else 0, curso_id)
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"Error al modificar visibilidad del curso: {e}")
+        return False
+    finally:
+        conn.close()
+
+# Función para eliminar un curso
+def delete_curso(curso_id):
+    """Elimina un curso de la base de datos"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # Verificar si hay actividades asociadas a este curso
+        cursor.execute("SELECT COUNT(*) FROM actividades WHERE curso_id = ?", (curso_id,))
+        count = cursor.fetchone()[0]
+        
+        if count > 0:
+            return False, f"No se puede eliminar el curso porque tiene {count} actividades asociadas"
+        
+        # Si no hay actividades, eliminar el curso
+        cursor.execute("DELETE FROM cursos WHERE id = ?", (curso_id,))
+        conn.commit()
+        return True, "Curso eliminado correctamente"
+    except Exception as e:
+        st.error(f"Error al eliminar curso: {e}")
+        return False, f"Error al eliminar curso: {e}"
     finally:
         conn.close()
 
@@ -200,7 +282,7 @@ def add_actividad(fecha, turno_id, monitor_nip, curso_id, notas=None):
         st.write(f"Debug - Intentando insertar: fecha={fecha}, turno_id={turno_id}, monitor_nip={monitor_nip}, curso_id={curso_id}, notas={notas}")
         cursor.execute(
             "INSERT INTO actividades (fecha, turno_id, monitor_nip, curso_id, notas) VALUES (?, ?, ?, ?, ?)",
-            (fecha, turno_id, monitor_nip, curso_id, notas)
+            (fecha.strftime('%Y-%m-%d'), turno_id, monitor_nip, curso_id, notas)
         )
         actividad_id = cursor.lastrowid
         st.write(f"Debug - ID generado: {actividad_id}")
@@ -341,13 +423,36 @@ def update_actividad(actividad_id, fecha, turno_id, monitor_nip, curso_id, notas
             SET fecha = ?, turno_id = ?, monitor_nip = ?, curso_id = ?, notas = ?
             WHERE id = ?
             """,
-            (fecha, turno_id, monitor_nip, curso_id, notas, actividad_id)
+            (fecha.strftime('%Y-%m-%d'), turno_id, monitor_nip, curso_id, notas, actividad_id)
         )
         conn.commit()
         return True
     except Exception as e:
         st.error(f"Error al actualizar actividad: {e}")
         return False
+    finally:
+        conn.close()
+
+# Función para eliminar un monitor
+def delete_monitor(nip):
+    """Elimina un monitor de la base de datos"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # Verificar si el monitor existe
+        cursor.execute("SELECT COUNT(*) FROM monitores WHERE nip = ?", (nip,))
+        count = cursor.fetchone()[0]
+        
+        if count == 0:
+            return False, "No se encontró el monitor especificado"
+        
+        # Eliminar el monitor
+        cursor.execute("DELETE FROM monitores WHERE nip = ?", (nip,))
+        conn.commit()
+        return True, "Monitor eliminado correctamente"
+    except Exception as e:
+        st.error(f"Error al eliminar monitor: {e}")
+        return False, f"Error al eliminar monitor: {e}"
     finally:
         conn.close()
 
@@ -435,7 +540,7 @@ try:
         min_date = pd.to_datetime(actividades['fecha']).min() if not actividades.empty else datetime.now().date()
         max_date = pd.to_datetime(actividades['fecha']).max() if not actividades.empty else datetime.now().date()
         
-        date_range = st.sidebar.date_input(
+        date_range = date_input_es(
             "Rango de fechas",
             value=(
                 min_date.date() if isinstance(min_date, pd.Timestamp) else min_date,
@@ -446,14 +551,15 @@ try:
         )
         
         # Convertir a lista si es una tupla
-        if isinstance(date_range, tuple):
+        if isinstance(date_range, tuple) and len(date_range) == 2:
             start_date, end_date = date_range
         else:
+            # Si es una sola fecha o no es una tupla, usar la misma fecha para inicio y fin
             start_date = end_date = date_range
         
         # Filtro de curso
         if 'nombre' in cursos.columns:
-            curso_options = ['Todos'] + cursos['nombre'].tolist()
+            curso_options = ['Todos'] + cursos[cursos['oculto'].fillna(0) == 0]['nombre'].tolist()
             curso_filtro = st.sidebar.selectbox("Curso", curso_options)
         else:
             curso_filtro = 'Todos'
@@ -477,10 +583,17 @@ try:
             if isinstance(df_filtrado['fecha'].iloc[0], str):
                 df_filtrado['fecha'] = pd.to_datetime(df_filtrado['fecha'])
             
-            df_filtrado = df_filtrado[
-                (df_filtrado['fecha'].dt.date >= start_date) & 
-                (df_filtrado['fecha'].dt.date <= end_date)
-            ]
+            if isinstance(date_range, tuple) and len(date_range) == 2:
+                fecha_inicio, fecha_fin = date_range
+                df_filtrado = df_filtrado[
+                    (df_filtrado['fecha'].dt.date >= fecha_inicio) & 
+                    (df_filtrado['fecha'].dt.date <= fecha_fin)
+                ]
+            else:
+                # Si es una sola fecha, filtrar por esa fecha específica
+                df_filtrado = df_filtrado[
+                    pd.to_datetime(df_filtrado["fecha"]).dt.date == date_range
+                ]
         
         # Filtro de curso
         if curso_filtro != 'Todos':
@@ -630,8 +743,10 @@ try:
         # Filtrar solo las columnas que existen
         columnas_mostrar = [col for col in columnas_mostrar if col in df_filtrado.columns]
         
+        # Formatear fechas para visualización
+        df_filtrado['fecha'] = df_filtrado['fecha'].apply(format_date_es)
+        
         # Mostrar tabla
-        df_filtrado['fecha'] = df_filtrado['fecha'].apply(lambda x: x.strftime('%d/%m/%Y') if isinstance(x, pd.Timestamp) else x)
         st.dataframe(
             df_filtrado[columnas_mostrar].sort_values('fecha', ascending=False),
             use_container_width=True,
@@ -715,7 +830,7 @@ try:
         # Botón para limpiar filtros
         col1, col2 = st.columns([1, 3])
         with col1:
-            if st.button("Limpiar Filtros", key="limpiar_filtros_agentes"):
+            if st.button("Limpiar Filtros", key="limpiar_filtros_agentes_principal"):
                 st.session_state.texto_busqueda_agentes = ""
                 st.session_state.agentes_filtrados_busqueda = st.session_state.agentes_df_original.copy()
                 st.rerun()
@@ -733,7 +848,7 @@ try:
             # Botón para limpiar filtros
             col1, col2 = st.columns([1, 3])
             with col1:
-                if st.button("Limpiar Filtros", key="limpiar_filtros_agentes"):
+                if st.button("Limpiar Filtros", key="limpiar_filtros_agentes_listado"):
                     st.session_state.texto_busqueda_agentes = ""
                     st.session_state.agentes_filtrados_busqueda = st.session_state.agentes_df_original.copy()
                     st.rerun()
@@ -885,10 +1000,13 @@ try:
                     
                     # Botón para eliminar
                     if st.button("Eliminar Monitor", type="primary", key="btn_eliminar_monitor"):
-                        delete_monitor(nip_seleccionado)
-                        st.success(f"Monitor {nip_seleccionado} eliminado correctamente")
-                        st.cache_data.clear()  # Limpiar caché para actualizar datos
-                        st.rerun()
+                        success, message = delete_monitor(nip_seleccionado)
+                        if success:
+                            st.success(message)
+                            st.cache_data.clear()  # Limpiar caché para actualizar datos
+                            st.rerun()
+                        else:
+                            st.error(message)
             else:
                 st.info("No hay monitores registrados en el sistema")
             
@@ -1030,7 +1148,7 @@ try:
                 # Filtro por fecha
                 min_date = pd.to_datetime(actividades_df['fecha']).min() if not actividades_df.empty else datetime.now().date()
                 max_date = pd.to_datetime(actividades_df['fecha']).max() if not actividades_df.empty else datetime.now().date()
-                fecha_filtro = st.date_input(
+                fecha_filtro = date_input_es(
                     "Filtrar por Fecha",
                     value=(datetime.now().date() - timedelta(days=7), datetime.now().date() + timedelta(days=30)),
                     min_value=min_date.date(),
@@ -1039,7 +1157,7 @@ try:
             
             with col2:
                 # Filtro por curso
-                cursos_opciones = ["Todos"] + cursos_df["nombre"].tolist()
+                cursos_opciones = ["Todos"] + cursos_df[cursos_df['oculto'].fillna(0) == 0]['nombre'].tolist()
                 curso_filtro = st.selectbox("Filtrar por Curso", cursos_opciones)
             
             with col3:
@@ -1057,6 +1175,11 @@ try:
                     (pd.to_datetime(actividades_filtradas["fecha"]).dt.date >= fecha_inicio) &
                     (pd.to_datetime(actividades_filtradas["fecha"]).dt.date <= fecha_fin)
                 ]
+            else:
+                # Si es una sola fecha, filtrar por esa fecha específica
+                actividades_filtradas = actividades_filtradas[
+                    pd.to_datetime(actividades_filtradas["fecha"]).dt.date == fecha_filtro
+                ]
             
             # Filtro de curso
             if curso_filtro != "Todos":
@@ -1068,9 +1191,9 @@ try:
             
             # Mostrar tabla de actividades
             if not actividades_filtradas.empty:
-                # Convertir fecha a formato legible
+                # Preparar dataframe para mostrar
                 actividades_display = actividades_filtradas.copy()
-                actividades_display['fecha'] = pd.to_datetime(actividades_display['fecha']).dt.strftime('%Y-%m-%d')
+                actividades_display['fecha'] = pd.to_datetime(actividades_display['fecha']).apply(format_date_es)
                 
                 # Mostrar tabla
                 st.dataframe(
@@ -1090,7 +1213,7 @@ try:
             
             with st.form("crear_actividad_form"):
                 # Campos del formulario
-                fecha = st.date_input(
+                fecha = date_input_es(
                     "Fecha", 
                     value=datetime.now().date()
                 )
@@ -1098,7 +1221,7 @@ try:
                 # Seleccionar curso
                 curso_id = st.selectbox(
                     "Curso", 
-                    options=[int(id) for id in cursos_df["id"].tolist()],
+                    options=[int(id) for id in cursos_df[cursos_df['oculto'].fillna(0) == 0]["id"].tolist()],
                     format_func=lambda x: cursos_df.loc[cursos_df["id"] == x, "nombre"].iloc[0]
                 )
                 
@@ -1147,7 +1270,7 @@ try:
                         
                         # Añadir nueva actividad
                         success, actividad_id = add_actividad(
-                            fecha.strftime('%Y-%m-%d'), 
+                            fecha, 
                             turno_id, 
                             monitor_final, 
                             curso_id, 
@@ -1175,11 +1298,11 @@ try:
                 # Preparar opciones para el selector
                 actividades_ordenadas = actividades_df.sort_values(by="fecha", ascending=True)
                 actividades_opciones = [
-                    f"{id} - {curso} ({fecha})" 
+                    f"{id} - {curso} ({format_date_es(fecha)})" 
                     for id, curso, fecha in zip(
                         actividades_ordenadas["id"], 
                         actividades_ordenadas["curso_nombre"], 
-                        pd.to_datetime(actividades_ordenadas["fecha"]).dt.strftime('%d/%m/%Y')
+                        pd.to_datetime(actividades_ordenadas["fecha"])
                     )
                 ]
                 
@@ -1201,7 +1324,7 @@ try:
                             st.write(f"Editando Actividad: {actividad_id} - {actividad_data['curso_nombre']} ({actividad_data['fecha']})")
                             
                             # Campos del formulario
-                            fecha = st.date_input(
+                            fecha = date_input_es(
                                 "Fecha", 
                                 value=pd.to_datetime(actividad_data["fecha"]).date()
                             )
@@ -1210,7 +1333,7 @@ try:
                             curso_id_actual = int(actividad_data["curso_id"])
                             
                             # Convertir los IDs a tipos nativos de Python
-                            cursos_opciones = [int(id) for id in cursos_df["id"].tolist()]
+                            cursos_opciones = [int(id) for id in cursos_df[cursos_df['oculto'].fillna(0) == 0]["id"].tolist()]
                             
                             # Seleccionar curso
                             curso_id = st.selectbox(
@@ -1285,7 +1408,7 @@ try:
                                     # Actualizar actividad
                                     success = update_actividad(
                                         actividad_id,
-                                        fecha.strftime('%Y-%m-%d'), 
+                                        fecha, 
                                         turno_id, 
                                         monitor_final, 
                                         curso_id, 
@@ -1323,11 +1446,11 @@ try:
                 # Preparar opciones para el selector
                 actividades_ordenadas = actividades_df.sort_values(by="fecha", ascending=True)
                 actividades_opciones = [
-                    f"{id} - {curso} ({fecha})" 
+                    f"{id} - {curso} ({format_date_es(fecha)})" 
                     for id, curso, fecha in zip(
                         actividades_ordenadas["id"], 
                         actividades_ordenadas["curso_nombre"], 
-                        pd.to_datetime(actividades_ordenadas["fecha"]).dt.strftime('%d/%m/%Y')
+                        pd.to_datetime(actividades_ordenadas["fecha"])
                     )
                 ]
                 
@@ -1482,17 +1605,79 @@ try:
             st.subheader("Gestión de Cursos")
             
             # Obtener lista de cursos
-            cursos_df = get_cursos()
+            mostrar_ocultos = st.checkbox("Mostrar cursos ocultos", value=False)
+            cursos_df = get_cursos(incluir_ocultos=mostrar_ocultos)
             
             # Mostrar lista de cursos actuales
             st.subheader("Cursos Disponibles")
             
             if not cursos_df.empty:
+                # Añadir columna para mostrar si el curso está oculto
+                if 'oculto' in cursos_df.columns:
+                    cursos_df['Estado'] = cursos_df['oculto'].apply(lambda x: "Oculto" if x == 1 else "Visible")
+                else:
+                    cursos_df['Estado'] = "Visible"
+                
                 # Mostrar tabla de cursos con IDs
                 st.dataframe(
-                    cursos_df,
+                    cursos_df[['id', 'nombre', 'descripcion', 'Estado']],
                     use_container_width=True
                 )
+                
+                # Sección para gestionar cursos existentes
+                st.subheader("Gestionar Cursos Existentes")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Formulario para ocultar/mostrar curso
+                    with st.form("ocultar_curso_form"):
+                        st.write("Ocultar/Mostrar Curso")
+                        curso_id_toggle = st.selectbox(
+                            "Seleccionar Curso", 
+                            options=cursos_df["id"].tolist(),
+                            format_func=lambda x: f"{cursos_df.loc[cursos_df['id'] == x, 'nombre'].iloc[0]} ({cursos_df.loc[cursos_df['id'] == x, 'Estado'].iloc[0]})"
+                        )
+                        
+                        accion = "Ocultar" if cursos_df.loc[cursos_df['id'] == curso_id_toggle, 'Estado'].iloc[0] == "Visible" else "Mostrar"
+                        submit_toggle = st.form_submit_button(f"{accion} Curso")
+                        
+                        if submit_toggle:
+                            ocultar = accion == "Ocultar"
+                            success = toggle_ocultar_curso(curso_id_toggle, ocultar)
+                            
+                            if success:
+                                st.success(f"Curso {accion.lower()}do correctamente")
+                                # Limpiar caché para actualizar lista de cursos
+                                st.cache_data.clear()
+                                # Recargar página
+                                st.rerun()
+                            else:
+                                st.error(f"Error al {accion.lower()} el curso")
+                
+                with col2:
+                    # Formulario para eliminar curso
+                    with st.form("eliminar_curso_form"):
+                        st.write("Eliminar Curso")
+                        curso_id_eliminar = st.selectbox(
+                            "Seleccionar Curso a Eliminar", 
+                            options=cursos_df["id"].tolist(),
+                            format_func=lambda x: cursos_df.loc[cursos_df['id'] == x, 'nombre'].iloc[0]
+                        )
+                        
+                        submit_eliminar = st.form_submit_button("Eliminar Curso")
+                        
+                        if submit_eliminar:
+                            success, message = delete_curso(curso_id_eliminar)
+                            
+                            if success:
+                                st.success(message)
+                                # Limpiar caché para actualizar lista de cursos
+                                st.cache_data.clear()
+                                # Recargar página
+                                st.rerun()
+                            else:
+                                st.error(message)
                 
                 # Sección para añadir nuevo curso
                 st.subheader("Añadir Nuevo Curso")
